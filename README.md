@@ -31,4 +31,9 @@ https://www.reddit.com/r/MachineLearning/comments/16ij18f/d_the_ml_papers_that_r
 ## Roly's favorite ideas:
 - LLaMA post-training (or even pre-training, if it's on a small enough corpus)
 - Wav2Vec and FastSpeech
-- Multi-modal models like CLIP 
+- Multi-modal models like CLIP
+
+## Chris's favorite ideas:
+- Wav2Vec and FastSpeech... need to get approved by a TA though
+- ViT (on sign up sheet)
+- A Watermark for Large Language Models (on sign up sheet)
