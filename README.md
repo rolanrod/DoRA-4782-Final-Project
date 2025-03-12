@@ -37,3 +37,6 @@ https://www.reddit.com/r/MachineLearning/comments/16ij18f/d_the_ml_papers_that_r
 - ViT (on sign up sheet)
 - A Watermark for Large Language Models (on sign up sheet)
 - Images that Sound (on sign up sheet, but looks potentially challenging)
+
+## Gerry's favorite ideas:
+- RNN & Simple Sketch Drawings https://arxiv.org/abs/1704.03477
