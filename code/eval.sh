@@ -1,4 +1,4 @@
-python commonsense_evaluate.py \
+python eval.py \
     --model LLaMA-7B \
     --adapter $3 \
     --dataset $2 \
