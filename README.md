@@ -30,20 +30,20 @@ pip install -r requirements.txt
 ## Finetuning and Evaluation
 
 ### Finetuning (`./finetune.sh`)
-This file contains the code to finetune LLaMA-7B using DoRA. User can specify different DoRA configuration for finetuning. To be specific, the first argument denotes the destination for saving the fine-tuned model and the second argument specifies whether you want to use lora or dora for finetuning.
+This file contains the code to finetune LLaMA-7B using DoRA. User can specify different DoRA configuration for finetuning. To be specific, the first argument denotes the destination for saving the fine-tuned model, the second argument specifies whether you want to use lora or dora for finetuning, and the third argument denotes the destination of the training data.
  
 For example, to finetune LLaMA-7B on BoolQ using DoRA, you could do:
 ```
-sh finetune.sh ./finetuned_result/dora_r32 dora ./dataset/boolq
+sh finetune.sh ./finetuned_result/dora_r32 dora ../data/boolq/train.json
 ```
 
 ### Evaluation (`./eval.sh`)
 
-This file contains the code to evaluate LLaMA-7B finetuned with DoRA or LoRA on any of the commonsense reasoning tasks. The first argument is the address of the model weights, the second argument specifies what dataset to evaluate on, and the last argument determines whether the weights are from DoRA or LoRA.
+This file contains the code to evaluate LLaMA-7B finetuned with DoRA or LoRA on any of the commonsense reasoning tasks. The first argument is the directory path of the model weights, the second argument determines whether the weights are from DoRA or LoRA, and the third argument specifies what dataset to evaluate on.
 
 For example, to evaluate a LLaMA-7B model that was trained on BoolQ using DoRA, you could do:
 ```
-sh eval.sh ./finetuned_result/dora_r32 ./data/boolq DoRA
+sh eval.sh ./finetuned_result/dora_r32 dora boolq
 ```
 
 # Results/Insights
