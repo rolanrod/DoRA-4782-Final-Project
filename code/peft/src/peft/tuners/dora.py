@@ -1,230 +1,232 @@
-import os
-import sys
-from typing import List
-
-import fire
-import torch
-import transformers
-from datasets import load_dataset
+import importlib
+from dataclasses import asdict, dataclass, field
+from enum import Enum
 from typing import List, Optional, Union
 
-sys.path.append(os.path.join(os.getcwd(), "peft/src/"))
-from peft import ( 
-    LoraConfig,
-    DoraConfig,
-    get_peft_model,
-    get_peft_model_state_dict,
-)
-from transformers import AutoModelForCausalLM, AutoTokenizer, LlamaTokenizer, AutoModel 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from ..utils import PeftConfig, PeftType, transpose
 
 
-def train(
-        # Model and Data
-        base_model = "",  # the only required argument
-        data_path  = "yahma/alpaca-cleaned",
-        output_dir = "./lora-alpaca",
-        adapter_name = "lora",
-        # Training Hyperparameters
-        batch_size = 128,
-        micro_batch_size = 4,
-        num_epochs = 3,
-        learning_rate = 3e-4,
-        weight_decay = 0.0,
-        cutoff_len = 256,
-        val_set_size = 2000,
-        use_gradient_checkpointing = False,
-        eval_step = 200,
-        save_step = 200,
-        # LoRA Hyperparameters
-        lora_r = 8,
-        lora_alpha = 16,
-        lora_dropout = 0.05,
-        # Bottleneck Adapter Hyperparameters
-        target_modules: List[str] = None,
-        # DoRA Hyperparameters
-        scaling = 1.0,
-        # LLM Hyperparameters
-        train_on_inputs = True, 
-        group_by_length = False,  
-):
-    print(
-        f"Finetuning model with params:\n"
-        f"base_model: {base_model}\n"
-        f"data_path: {data_path}\n"
-        f"output_dir: {output_dir}\n"
-        f"batch_size: {batch_size}\n"
-        f"micro_batch_size: {micro_batch_size}\n"
-        f"num_epochs: {num_epochs}\n"
-        f"learning_rate: {learning_rate}\n"
-        f"cutoff_len: {cutoff_len}\n"
-        f"val_set_size: {val_set_size}\n"
-        f"use_gradient_checkpointing: {use_gradient_checkpointing}\n"
-        f"lora_r: {lora_r}\n"
-        f"lora_alpha: {lora_alpha}\n"
-        f"lora_dropout: {lora_dropout}\n"
-        f"train_on_inputs: {train_on_inputs}\n"
-        f"scaling: {scaling}\n"
-        f"adapter_name: {adapter_name}\n"
-        f"target_modules: {target_modules}\n"
-    )
-    assert (
-        base_model
-    ), "Please specify a --base_model"
+def is_bnb_available():
+    return importlib.util.find_spec("bitsandbytes") is not None
 
-    gradient_accumulation_steps = batch_size // micro_batch_size
 
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model,
-        load_in_8bit=False,
-        torch_dtype=torch.float16,
-        trust_remote_code=True,
-    )
+if is_bnb_available():
+    import bitsandbytes as bnb
 
-    tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
 
-    # Use unknown token because we want this to be different from the eos token
-    tokenizer.pad_token_id = (0)
+@dataclass
+class DoraConfig(PeftConfig):
+    """Configuration class for DoraModel."""
+    r: int = field(default=8, metadata={"help": "Lora attention dimension"})
+    target_modules: Optional[Union[List[str], str]] = field(
+        default=None)
+    lora_alpha: int = field(default=8)
+    lora_dropout: float = field(default=0.0)
+    merge_weights: bool = field(default=False)
+    bias: str = field(default="none")
 
-    # This allows for batched inference
-    tokenizer.padding_side = "left" 
+    def __post_init__(self):
+        self.peft_type = PeftType.DORA
 
-    def tokenize(prompt, add_eos_token=True):
-        result = tokenizer(
-            prompt,
-            truncation=True,
-            max_length=cutoff_len,
-            padding=False,
-            return_tensors=None,
-        )
-        if (
-                result["input_ids"][-1] != tokenizer.eos_token_id
-                and len(result["input_ids"]) < cutoff_len
-                and add_eos_token
-        ):
-            result["input_ids"].append(tokenizer.eos_token_id)
-            result["attention_mask"].append(1)
 
-        result["labels"] = result["input_ids"].copy()
+class LoraLayer:
+    def __init__(
+        self,
+        r: int,
+        lora_alpha: int,
+        lora_dropout: float,
+        merge_weights: bool,
+    ):
+        self.r = r
+        self.lora_alpha = lora_alpha
+        self.lora_dropout = nn.Dropout(p=lora_dropout) if lora_dropout > 0.0 else lambda x: x
+        self.merged = False
+        self.merge_weights = merge_weights
+
+
+class Linear(nn.Linear, LoraLayer):
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        r: int = 0,
+        lora_alpha: int = 1,
+        lora_dropout: float = 0.0,
+        merge_weights: bool = True,
+        **kwargs,
+    ):
+        nn.Linear.__init__(self, in_features, out_features, **kwargs)
+        LoraLayer.__init__(self, r=r, lora_alpha=lora_alpha, lora_dropout=lora_dropout, merge_weights=merge_weights)
+
+        self.w_decomp= nn.Linear(1, out_features, bias=False)
+        
+        if r > 0:
+            self.lora_A = nn.Linear(in_features, r, bias=False)
+            self.lora_B = nn.Linear(r, out_features, bias=False)
+            self.scaling = self.lora_alpha / self.r
+
+        self.weight.requires_grad = False
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.Linear.reset_parameters(self)
+        if hasattr(self, "lora_A"):
+            nn.init.kaiming_uniform_(self.lora_A.weight, a=5**0.5)
+            nn.init.zeros_(self.lora_B.weight)
+
+    def train(self, mode: bool = True):
+        nn.Linear.train(self, mode)
+       
+        self.lora_A.train(mode)
+        self.lora_B.train(mode)
+        self.w_decomp.train(mode)
+
+        if not mode and self.merge_weights and not self.merged:
+            if self.r > 0:
+                # Compute the adapted weights
+                delta_weight = self.lora_B.weight @ self.lora_A.weight
+                new_weight = self.weight + delta_weight * self.scaling
+
+                # Normalize using the decomposition weights
+                norm = torch.linalg.norm(new_weight, dim=1, keepdim=True)
+                normalized_weight = (self.w_decomp.weight / norm) * new_weight
+
+                # Update the weight tensor
+                self.weight.data.copy_(normalized_weight.detach())
+            self.merged = True
+
+    def eval(self):
+        nn.Linear.eval(self)
+        self.lora_A.eval()
+        self.lora_B.eval()
+        self.w_decomp.eval()
+
+    def forward(self, x: torch.Tensor):
+        previous_dtype = self.weight.dtype
+        
+        if self.r > 0 and not self.merged:
+            new_weight_v = self.weight + (self.lora_B.weight @ self.lora_A.weight) * self.scaling
+            
+            norm_scale = self.w_decomp.weight.view(-1) / (torch.linalg.norm(new_weight_v, dim=1)).detach()
+           
+            org_result = F.linear(x, self.weight)
+            dropout_x = self.lora_dropout(x)
+            result = org_result + (norm_scale-1) * F.linear(dropout_x, self.weight)
+            
+            if self.bias is not None:
+                result += self.bias.view(1, -1).expand_as(result)
+                
+            result += (norm_scale * self.lora_B(self.lora_A(dropout_x.to(self.lora_A.weight.dtype)))) * self.scaling
+        else:
+            result = F.linear(x, self.weight, bias=self.bias)
+
+        if result.dtype != previous_dtype:
+            result = result.to(previous_dtype)
 
         return result
 
-    def generate_and_tokenize_prompt(data_point):
-        full_prompt = generate_prompt(data_point)
-        tokenized_full_prompt = tokenize(full_prompt)
-        if not train_on_inputs:
-            user_prompt = generate_prompt({**data_point, "output": ""})
-            tokenized_user_prompt = tokenize(user_prompt, add_eos_token=False)
-            user_prompt_len = len(tokenized_user_prompt["input_ids"])
 
-            # The folowing line masks out the user prompt part in labels by setting it to -100 so the model doesn't get trained to predict it.
-            # Only the completion's tokens are used for loss computation.
-            tokenized_full_prompt["labels"] = [-100] * user_prompt_len + tokenized_full_prompt["labels"][user_prompt_len:]  
+def mark_only_lora_as_trainable(model: nn.Module, bias: str = "none") -> None:
+    for name, param in model.named_parameters():
+        if "lora_" not in name and "w_decomp" not in name:
+            param.requires_grad = False
+        else:
+            print(f"{name} is trainable")
             
-        return tokenized_full_prompt
+    if bias == "none":
+        return
+    elif bias == "all":
+        for name, param in model.named_parameters():
+            if "bias" in name:
+                param.requires_grad = True
+    elif bias == "lora_only":
+        for m in model.modules():
+            if isinstance(m, LoraLayer) and hasattr(m, "bias") and m.bias is not None:
+                m.bias.requires_grad = True
 
-    if adapter_name == "lora":
-        config = LoraConfig(
-            r=lora_r,
-            lora_alpha=lora_alpha,
-            target_modules=target_modules,
-            lora_dropout=lora_dropout,
-            bias="none",
-            task_type="CAUSAL_LM",
-        )
-    elif adapter_name == "dora":
-        print("DoRA init")
-        config = DoraConfig(
-            r=lora_r,
-            lora_alpha=lora_alpha,
-            target_modules=target_modules,
-            lora_dropout=lora_dropout,
-            bias="none",
-            task_type="CAUSAL_LM"
-        )
-    model = get_peft_model(model, config)
 
-    data = load_dataset("json", data_files=data_path)
+class DoraModel(torch.nn.Module):
+    def __init__(self, config, model):
+        super().__init__()
+        self.peft_config = config
+        self.model = model
+        self._find_and_replace()
+        mark_only_lora_as_trainable(self.model, self.peft_config.bias)
+        self.forward = self.model.forward
 
-    model.print_trainable_parameters() 
-
-    if val_set_size > 0:
-        train_val = data["train"].train_test_split(
-            test_size=val_set_size, shuffle=True, seed=42
-        )
-        train_data = (
-            train_val["train"].shuffle().map(generate_and_tokenize_prompt)
-        )
-        val_data = (
-            train_val["test"].shuffle().map(generate_and_tokenize_prompt)
-        )
-    else:
-        train_data = data["train"].shuffle().map(generate_and_tokenize_prompt)
-        val_data = None
+    def _find_and_replace(self):
+        import re
     
-    trainer = transformers.Trainer(
-        model=model,
-        train_dataset=train_data,
-        eval_dataset=val_data,
-        args=transformers.TrainingArguments(
-            per_device_train_batch_size=micro_batch_size,
-            gradient_accumulation_steps=gradient_accumulation_steps,
-            warmup_steps=100,
-            num_train_epochs=num_epochs,
-            learning_rate=learning_rate,
-            weight_decay=weight_decay,
-            fp16=True,
-            logging_steps=10,
-            optim="adamw_torch",
-            evaluation_strategy="steps" if val_set_size > 0 else "no",
-            save_strategy="steps",
-            eval_steps=eval_step if val_set_size > 0 else None,
-            save_steps=save_step,
-            output_dir=output_dir,
-            save_total_limit=3,
-            load_best_model_at_end=True,
-            group_by_length=group_by_length
-        ),
-        data_collator=transformers.DataCollatorForSeq2Seq(
-            tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
-        ),
-    )
-    model.config.use_cache = False
+        is_target_modules_in_base_model = False
+        kwargs = {
+            "r": self.peft_config.r,
+            "lora_alpha": self.peft_config.lora_alpha,
+            "lora_dropout": self.peft_config.lora_dropout,
+            "merge_weights": self.peft_config.merge_weights or self.peft_config.inference_mode,
+        }
+        
+        for key, _ in self.model.named_modules():
+            # Check if the module is a target module
+            if isinstance(self.peft_config.target_modules, str):
+                target_module_found = re.fullmatch(self.peft_config.target_modules, key)
+            else:
+                target_module_found = any(key.endswith(target_key) for target_key in self.peft_config.target_modules or [])
 
-    old_state_dict = model.state_dict
-    model.state_dict = (
-        lambda self, *_, **__: get_peft_model_state_dict(
-            self, old_state_dict()
-        )
-    ).__get__(model, type(model))
-    
-    model = torch.compile(model)
-
-    trainer.train()
-
-    model.save_pretrained(output_dir)
-
-# Generate the prompt for the model
-def generate_prompt(data_point):
-    if data_point["input"]:
-        return f"""Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request. 
-
-                ### Instruction:
-                {data_point["instruction"]}
+            if target_module_found:
+                if not is_target_modules_in_base_model:
+                    is_target_modules_in_base_model = True
+                    
+                parent, target, target_name = self._get_submodules(key)
+                bias = target.bias is not None
                 
-                ### Input:
-                {data_point["input"]}
+                # Create appropriate module based on target type
+                if isinstance(target, torch.nn.Linear):
+                    new_module = Linear(
+                        target.in_features, 
+                        target.out_features, 
+                        bias=bias, 
+                        **kwargs
+                    )
+                    self._replace_module(parent, target_name, new_module, target)
                 
-                ### Response:
-                {data_point["output"]}""" 
-    else:
-        return f"""Below is an instruction that describes a task. Write a response that appropriately completes the request.  
+        if not is_target_modules_in_base_model:
+            raise ValueError(f"Target modules not found in the base model.")
 
-                ### Instruction:
-                {data_point["instruction"]}
-                
-                ### Response:
-                {data_point["output"]}"""
+    def _get_submodules(self, key):
+        parent = self.model.get_submodule(".".join(key.split(".")[:-1]))
+        target_name = key.split(".")[-1]
+        target = self.model.get_submodule(key)
+        return parent, target, target_name
 
+    def _replace_module(self, parent_module, child_name, new_module, old_module):
+        setattr(parent_module, child_name, new_module)
+        new_module.weight = old_module.weight
 
-if __name__ == "__main__":
-    fire.Fire(train)
+        # Initialize magnitude component
+        with torch.no_grad():
+            magnitude = torch.linalg.norm(new_module.weight.detach(), dim=1).unsqueeze(1).detach()
+            new_module.w_decomp.weight.copy_(magnitude)
+        
+        if old_module.bias is not None:
+            new_module.bias = old_module.bias
+            
+        # Dispatch modules to device
+        for name, module in new_module.named_modules():
+            if "lora_" in name or "w_decomp" in name:
+                module.to(old_module.weight.device)
+
+    def __getattr__(self, name: str):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.model, name)
+
+    def get_peft_config_as_dict(self, inference: bool = False):
+        config = {k: v.value if isinstance(v, Enum) else v for k, v in asdict(self.peft_config).items()}
+        if inference:
+            config["inference_mode"] = True
+        return config

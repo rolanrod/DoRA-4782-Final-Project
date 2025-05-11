@@ -83,6 +83,7 @@ def main(
     output_data = []
     pbar = tqdm(total=total)
     save_file = f'experiment/"Llama-7B-{args.adapter}-{args.dataset}.json'
+    os.makedirs(os.path.dirname(save_file), exist_ok=True)
     for idx, batch in enumerate(batches):
         current += len(batch)
         instructions = [data.get('instruction') for data in batch]

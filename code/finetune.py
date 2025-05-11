@@ -128,7 +128,6 @@ def train(
             lora_alpha=lora_alpha,
             target_modules=target_modules,
             lora_dropout=lora_dropout,
-            bias="none",
             task_type="CAUSAL_LM",
         )
     elif adapter_name == "dora":
@@ -138,7 +137,6 @@ def train(
             lora_alpha=lora_alpha,
             target_modules=target_modules,
             lora_dropout=lora_dropout,
-            bias="none",
             task_type="CAUSAL_LM"
         )
     model = get_peft_model(model, config)
