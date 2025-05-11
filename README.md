@@ -2,23 +2,23 @@
 
 This project is an attempt to replicate the results of DoRA, a parameter-efficient fine-tuning (PEFT) method that improved on the previous standard (LoRA) by decomposing pre-trained weight into magnitude and direction. The work by Shih-Yang Liu et. al consistently outperformed LoRA on fine-tuning tasks with several open source base models. This project was completed by Rolando Rodríguez, Chris Fernandes, Ishaan Nanal, and Gerardo Montemayor and all credit is given to the writers of the original paper for their work.
 
-_DoRA: Weight-Decomposed Low-Rank Adaptation_, available at https://arxiv.org/abs/2402.
-
 # Chosen Result
 
 We were particularly interested in reproducing the superior performance of DoRA over LoRA on commonsense reasoning tasks. These are located in Table 1 of the original paper. 
 
 # Github Contents
 
-Refer to `./peft/src/peft/tuners/dora.py` for the implementation of DoRA.
+Refer to `./code/peft/src/peft/tuners/dora.py` for the implementation of DoRA.
 
-Refer to `./finetune.py` for the LlaMA-7B finetuning script using either DoRA or LoRA.
+Refer to `./code/finetune.py` for the LlaMA-7B finetuning script using either DoRA or LoRA.
 
-Refer to `./commonsense_evaluate.py` for the evaluation script of the finetuned LlaMA-7B model.
+Refer to `.code/eval.py` for the evaluation script of the finetuned LlaMA-7B model.
 
+# Re-implementation Details
 
-# Re-implementation
+DoRA is an extension of LoRA, so, like the authors of DoRA, we made use of the existing LoRA implementation to guide our implementation of DoRA. We struggled a lot with memory management, so we ultimately only tested Llama-7B on BoolQ, Winogrande, and Hellaswag. We compared accuracy after finetuning for LoRA vs DoRA. We were unable to train on the full dataset used in the paper (a combination of several commonsense reasoning datasets). Instead, we trained and then evaluated our model on BoolQ, HellaSwag, and Winogrande independently.
 
+# Reproduction Steps
 ## Setup
 Create a conda environment as described below.
 ```bash
@@ -26,6 +26,8 @@ conda create -n dora_llama python=3.10
 conda activate dora_llama
 pip install -r requirements.txt
 ```
+
+Computational Requirements: A GPU with at least 40GB of VRAM. We used an A100 GPU.
 
 ## Finetuning and Evaluation
 
@@ -56,18 +58,19 @@ Due to our limited compute, we were unable to train on the full dataset used in 
 | Paper's DoRA | 69.7 | 87.2    | 81.9 |
 | Our DoRA   | 65.8| 51.2 | 79.5 |
 
-TODO: Explain the our results in relation to the paper's. E.g. why is there a difference
+Our approach yielded similar accuracy on BoolQ and Winogrande, but on HellaSwag our accuracy was much lower. We suspect that this is due to HellaSwag containing a more complex task (correctly completing a sentence by choosing one of 4 offerred endings), whereas BoolQ and Winogrande are binary tasks (true/false and fill in the blank given only two options). 
 
 # Conclusion
+- DoRA outperforms LoRA while keeping marginal parameter count low.
+- Decoupling direction and magnitude allows gradient updates to optimize both independently.
+- Normalization as a remedy for instability can be extended to fine-tuning
 
 # References
+- _DoRA: Weight-Decomposed Low-Rank Adaptation_, available at https://arxiv.org/abs/2402.
+- [DoRA](https://github.com/NVlabs/DoRA)
+- [LLM-Adapter](https://github.com/AGI-Edgerunners/LLM-Adapters)
+- [PEFT](https://github.com/huggingface/peft)
 
 # Acknoledgements
-
-TODOS: 
-- Empty sections
-- Add data as described in handout
-- TODO: restructure the repo and code
-- LICENSE
-
+This was our final project for Cornell University's CS 4782: Intro to Deep Learning, taught by Kilian Q. Weinberger and Jennifer J. Sun.
 
