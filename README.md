@@ -58,12 +58,12 @@ Due to our limited compute, we were unable to train on the full dataset used in 
 | Paper's DoRA | 69.7 | 87.2    | 81.9 |
 | Our DoRA   | 65.8| 51.2 | 79.5 |
 
-Our approach yielded similar accuracy on BoolQ and Winogrande, but on HellaSwag our accuracy was much lower. We suspect that this is due to HellaSwag containing a more complex task (correctly completing a sentence by choosing one of 4 offerred endings), whereas BoolQ and Winogrande are binary tasks (true/false and fill in the blank given only two options). 
+Our approach yielded similar accuracy on BoolQ and Winogrande, but on HellaSwag our accuracy was much lower. We suspect that this is due to HellaSwag containing a more complex task (correctly completing a sentence by choosing one of 4 offerred endings), whereas BoolQ and Winogrande are binary tasks (true/false and fill in the blank given only two options). Regardless, we still showed that DoRA was able to outperform LoRA on all three datasets.
 
 # Conclusion
 - DoRA outperforms LoRA while keeping marginal parameter count low.
 - Decoupling direction and magnitude allows gradient updates to optimize both independently.
-- Normalization as a remedy for instability can be extended to fine-tuning
+- Normalization as a remedy for instability can be extended to fine-tuning.
 
 # References
 - _DoRA: Weight-Decomposed Low-Rank Adaptation_, available at https://arxiv.org/abs/2402.
